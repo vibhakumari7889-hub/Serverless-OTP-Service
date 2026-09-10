@@ -1,157 +1,145 @@
 import json
 import secrets
+import time
+import hashlib
+import boto3
+
+table = boto3.resource("dynamodb").Table("OTPStore")
 
 
 def generate_otp(length=6):
     return "".join(str(secrets.randbelow(10)) for _ in range(length))
 
 
-def lambda_handler(event, context):
-    try:
-        otp_length = 6
-
-        if "body" in event and event["body"]:
-            body = json.loads(event["body"]) if isinstance(event["body"], str) else event["body"]
-            otp_length = int(body.get("length", 6))
-
-        elif "queryStringParameters" in event and event.get("queryStringParameters"):
-            otp_length = int(event["queryStringParameters"].get("length", 6))
-
-        elif "length" in event:
-            otp_length = int(event["length"])
-
-        if otp_length < 4 or otp_length > 10:
-            raise ValueError("OTP length must be between 4 and 10")
-
-        otp_code = generate_otp(otp_length)
-
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
-            },
-            "body": json.dumps({
-                "success": True,
-                "otp": otp_code,
-                "message": f"Successfully generated a {otp_length}-digit OTP code."
-            })
-        }
-
-    except Exception as e:
-        return {
-            "statusCode": 400,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
-            },
-            "body": json.dumps({
-                "success": False,
-                "error": f"Invalid request execution: {str(e)}"
-            })
-        }import json
-import secrets
+def hash_otp(otp):
+    return hashlib.sha256(otp.encode()).hexdigest()
 
 
-def generate_otp(length=6):
-    return "".join(str(secrets.randbelow(10)) for _ in range(length))
+def response(status_code, data):
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+        },
+        "body": json.dumps(data)
+    }
 
 
 def lambda_handler(event, context):
     try:
-        otp_length = 6
+        body = {}
 
-        if "body" in event and event["body"]:
-            body = json.loads(event["body"]) if isinstance(event["body"], str) else event["body"]
+        if event.get("body"):
+            body = (
+                json.loads(event["body"])
+                if isinstance(event["body"], str)
+                else event["body"]
+            )
+        elif event.get("queryStringParameters"):
+            body = event["queryStringParameters"] or {}
+        else:
+            body = event or {}
+
+        action = body.get("action", "generate")
+        user_id = body.get("userId")
+
+        if not user_id:
+            raise ValueError("userId is required")
+
+        if action == "generate":
             otp_length = int(body.get("length", 6))
 
-        elif "queryStringParameters" in event and event.get("queryStringParameters"):
-            otp_length = int(event["queryStringParameters"].get("length", 6))
+            if otp_length < 4 or otp_length > 10:
+                raise ValueError("OTP length must be between 4 and 10")
 
-        elif "length" in event:
-            otp_length = int(event["length"])
+            otp = generate_otp(otp_length)
+            ttl = int(time.time()) + 300
 
-        if otp_length < 4 or otp_length > 10:
-            raise ValueError("OTP length must be between 4 and 10")
+            table.put_item(
+                Item={
+                    "userId": user_id,
+                    "otpHash": hash_otp(otp),
+                    "ttl": ttl
+                }
+            )
 
-        otp_code = generate_otp(otp_length)
+            return response(
+                200,
+                {
+                    "success": True,
+                    "userId": user_id,
+                    "otp": otp,
+                    "expiresIn": 300,
+                    "message": "OTP generated successfully."
+                }
+            )
 
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
-            },
-            "body": json.dumps({
-                "success": True,
-                "otp": otp_code,
-                "message": f"Successfully generated a {otp_length}-digit OTP code."
-            })
-        }
+        if action == "verify":
+            otp = str(body.get("otp", ""))
+
+            item = table.get_item(
+                Key={"userId": user_id}
+            ).get("Item")
+
+            if not item:
+                return response(
+                    404,
+                    {
+                        "success": False,
+                        "verified": False,
+                        "message": "OTP not found"
+                    }
+                )
+
+            if int(item["ttl"]) < int(time.time()):
+                table.delete_item(
+                    Key={"userId": user_id}
+                )
+
+                return response(
+                    400,
+                    {
+                        "success": False,
+                        "verified": False,
+                        "message": "OTP expired"
+                    }
+                )
+
+            if secrets.compare_digest(
+                hash_otp(otp),
+                item["otpHash"]
+            ):
+                table.delete_item(
+                    Key={"userId": user_id}
+                )
+
+                return response(
+                    200,
+                    {
+                        "success": True,
+                        "verified": True,
+                        "message": "OTP verified successfully"
+                    }
+                )
+
+            return response(
+                401,
+                {
+                    "success": False,
+                    "verified": False,
+                    "message": "Invalid OTP"
+                }
+            )
+
+        raise ValueError("action must be generate or verify")
 
     except Exception as e:
-        return {
-            "statusCode": 400,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
-            },
-            "body": json.dumps({
+        return response(
+            400,
+            {
                 "success": False,
-                "error": f"Invalid request execution: {str(e)}"
-            })
-        }import json
-import secrets
-
-
-def generate_otp(length=6):
-    return "".join(str(secrets.randbelow(10)) for _ in range(length))
-
-
-def lambda_handler(event, context):
-    try:
-        otp_length = 6
-
-        if "body" in event and event["body"]:
-            body = json.loads(event["body"]) if isinstance(event["body"], str) else event["body"]
-            otp_length = int(body.get("length", 6))
-
-        elif "queryStringParameters" in event and event.get("queryStringParameters"):
-            otp_length = int(event["queryStringParameters"].get("length", 6))
-
-        elif "length" in event:
-            otp_length = int(event["length"])
-
-        if otp_length < 4 or otp_length > 10:
-            raise ValueError("OTP length must be between 4 and 10")
-
-        otp_code = generate_otp(otp_length)
-
-        return {
-            "statusCode": 200,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
-            },
-            "body": json.dumps({
-                "success": True,
-                "otp": otp_code,
-                "message": f"Successfully generated a {otp_length}-digit OTP code."
-            })
-        }
-
-    except Exception as e:
-        return {
-            "statusCode": 400,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*"
-            },
-            "body": json.dumps({
-                "success": False,
-                "error": f"Invalid request execution: {str(e)}"
-            })
-        }
+                "error": str(e)
+            }
+        )
