@@ -1,5 +1,7 @@
 # Serverless OTP Generation Service
+## Live Demo
 
+[Open Live OTP Generator](https://fiuerhtw6wrgdsm2itc3e6mj7a0hlucj.lambda-url.ap-south-1.on.aws/)
 A serverless OTP generation service built using AWS Lambda and Python.
 
 ## Features
